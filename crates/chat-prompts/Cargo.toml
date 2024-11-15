@@ -19,3 +19,13 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tera = "1.12"
+minijinja = "2.5.0"
+log = { workspace = true, optional = true }
+
+[target.wasm32-wasip1.dependencies]
+wasi-logger = { workspace = true, optional = true }
+
+[features]
+default = []
+full = ["logging"]
+logging = ["wasi-logger", "log"]

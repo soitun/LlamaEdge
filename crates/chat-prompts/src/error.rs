@@ -21,4 +21,6 @@ pub enum PromptError {
     UnknownPromptTemplateType(String),
     #[error("Failed to build prompt. Reason: {0}")]
     Operation(String),
+    #[error("Failed to parse template. Reason: {0}")]
+    TemplateError(String),
 }

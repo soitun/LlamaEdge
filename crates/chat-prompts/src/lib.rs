@@ -2,6 +2,10 @@
 //!
 //! For the details of available prompt templates, see [README.md](https://github.com/LlamaEdge/LlamaEdge/tree/main/api-server/chat-prompts).
 
+#[cfg(feature = "logging")]
+#[macro_use]
+extern crate log;
+
 pub mod chat;
 pub mod error;
 
@@ -19,6 +23,8 @@ pub enum PromptTemplateType {
     Llama3Chat,
     #[value(name = "llama-3-tool")]
     Llama3Tool,
+    #[value(name = "llama-3-prompt")]
+    Llama3Prompt,
     #[value(name = "mistral-instruct")]
     MistralInstruct,
     #[value(name = "mistral-tool")]
@@ -104,6 +110,7 @@ impl PromptTemplateType {
             PromptTemplateType::Llama2Chat
             | PromptTemplateType::Llama3Chat
             | PromptTemplateType::Llama3Tool
+            | PromptTemplateType::Llama3Prompt
             | PromptTemplateType::CodeLlama
             | PromptTemplateType::CodeLlamaSuper
             | PromptTemplateType::VicunaChat
@@ -154,6 +161,7 @@ impl FromStr for PromptTemplateType {
             "llama-2-chat" => Ok(PromptTemplateType::Llama2Chat),
             "llama-3-chat" => Ok(PromptTemplateType::Llama3Chat),
             "llama-3-tool" => Ok(PromptTemplateType::Llama3Tool),
+            "llama-3-prompt" => Ok(PromptTemplateType::Llama3Prompt),
             "mistral-instruct" => Ok(PromptTemplateType::MistralInstruct),
             "mistral-tool" => Ok(PromptTemplateType::MistralTool),
             "mistrallite" => Ok(PromptTemplateType::MistralLite),
@@ -206,6 +214,7 @@ impl std::fmt::Display for PromptTemplateType {
             PromptTemplateType::Llama2Chat => write!(f, "llama-2-chat"),
             PromptTemplateType::Llama3Chat => write!(f, "llama-3-chat"),
             PromptTemplateType::Llama3Tool => write!(f, "llama-3-tool"),
+            PromptTemplateType::Llama3Prompt => write!(f, "llama-3-prompt"),
             PromptTemplateType::MistralInstruct => write!(f, "mistral-instruct"),
             PromptTemplateType::MistralTool => write!(f, "mistral-tool"),
             PromptTemplateType::MistralLite => write!(f, "mistrallite"),
