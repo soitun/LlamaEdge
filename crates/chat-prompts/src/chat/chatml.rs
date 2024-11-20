@@ -5,11 +5,12 @@ use endpoints::chat::{
     ChatCompletionToolMessage, ChatCompletionUserMessage, ChatCompletionUserMessageContent,
     ContentPart, Tool,
 };
+use minijinja::{context, Environment};
 
 /// Generate prompts for the models using ChatML template.
 #[derive(Debug, Default, Clone)]
-pub struct ChatMLPrompt;
-impl ChatMLPrompt {
+pub struct ChatMLPromptOld;
+impl ChatMLPromptOld {
     /// Create a system prompt from a chat completion request message.
     fn create_system_prompt(&self, message: &ChatCompletionSystemMessage) -> String {
         let content = message.content();
@@ -104,7 +105,7 @@ impl ChatMLPrompt {
         ))
     }
 }
-impl BuildChatPrompt for ChatMLPrompt {
+impl BuildChatPrompt for ChatMLPromptOld {
     fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
         if messages.is_empty() {
             return Err(crate::error::PromptError::NoMessages);
@@ -581,6 +582,63 @@ impl BuildChatPrompt for InternLM2ToolPrompt {
         }
 
         prompt.push_str("\n<|im_start|>assistant");
+
+        Ok(prompt)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct ChatMLPrompt;
+impl BuildChatPrompt for ChatMLPrompt {
+    fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
+        let template_str = r#"
+{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system
+You are a helpful, respectful and honest assistant. Always answer as short as possible, while being safe.<|im_end|>
+' }}{% endif %}{{'<|im_start|>' + message['role'] + '
+' + message['content'] + '<|im_end|>' + '
+'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
+' }}{% endif %}
+        "#;
+
+        // Create an environment and add the template
+        let mut env = Environment::new();
+        if let Err(e) = env.add_template("template", template_str) {
+            #[cfg(all(feature = "logging", target_os = "wasi"))]
+            error!(target: "stdout", "{}", e);
+
+            return Err(PromptError::TemplateError(e.to_string()));
+        }
+
+        // Create context for rendering
+        let context = context! {
+            messages => messages,
+            add_generation_prompt => true,
+        };
+
+        // Render the template
+        let template = match env.get_template("template") {
+            Ok(tmpl) => tmpl,
+            Err(e) => {
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", e);
+
+                return Err(PromptError::TemplateError(e.to_string()));
+            }
+        };
+
+        let prompt = match template.render(context) {
+            Ok(r) => r.trim().to_string(),
+            Err(e) => {
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", e);
+
+                return Err(PromptError::TemplateError(e.to_string()));
+            }
+        };
+
+        // Print the result
+        #[cfg(all(feature = "logging", target_os = "wasi"))]
+        info!(target: "stdout", "raw prompt:\n{}", &prompt);
 
         Ok(prompt)
     }
