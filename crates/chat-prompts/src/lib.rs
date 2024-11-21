@@ -8,11 +8,18 @@ extern crate log;
 
 pub mod chat;
 pub mod error;
+pub(crate) mod templates;
 
 use clap::ValueEnum;
 use endpoints::chat::ChatCompletionRequestMessage;
+use error::{PromptError, Result};
+use minijinja::{context, Environment};
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+
+/// Define the global `Environment` instance.
+static ENV: OnceCell<Environment> = OnceCell::new();
 
 /// Define the chat prompt template types.
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -342,4 +349,96 @@ impl std::fmt::Display for MergeRagContextPolicy {
             MergeRagContextPolicy::LastUserMessage => write!(f, "last-user-message"),
         }
     }
+}
+
+/// Initialize environment.
+pub(crate) fn initialize_env(template_type: PromptTemplateType) -> Result<String> {
+    let (env, template_name) = match template_type {
+        PromptTemplateType::ChatML => {
+            let template_name = "chatml";
+            let mut env = Environment::new();
+            if let Err(e) = env.add_template(template_name, templates::chatml::CHATML_TEMPLATE) {
+                let err_msg = format!("Failed to add template: {}", e);
+
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", &err_msg);
+
+                return Err(PromptError::TemplateError(err_msg));
+            }
+            (env, template_name)
+        }
+        PromptTemplateType::Llama3Tool | PromptTemplateType::Llama3Chat => {
+            let template_name = "llama-3-chat";
+            let mut env = Environment::new();
+            if let Err(e) = env.add_template(template_name, templates::llama::LLAMA3_TEMPLATE) {
+                let err_msg = format!("Failed to add template: {}", e);
+
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", &err_msg);
+
+                return Err(PromptError::TemplateError(err_msg));
+            }
+            (env, template_name)
+        }
+        PromptTemplateType::Llama2Chat => {
+            let template_name = "llama-2-chat";
+            let mut env = Environment::new();
+            if let Err(e) = env.add_template(template_name, templates::llama::LLAMA2_TEMPLATE) {
+                let err_msg = format!("Failed to add template: {}", e);
+
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", &err_msg);
+
+                return Err(PromptError::TemplateError(err_msg));
+            }
+            (env, template_name)
+        }
+        _ => {
+            let err_msg = format!("Unsupported prompt template type: {}", template_type);
+
+            #[cfg(all(feature = "logging", target_os = "wasi"))]
+            error!(target: "stdout", "{}", &err_msg);
+
+            return Err(PromptError::UnknownPromptTemplateType(err_msg));
+        }
+    };
+
+    ENV.set(env)
+        .expect("Environment has already been initialized");
+    Ok(template_name.to_string())
+}
+
+/// Render template.
+pub(crate) fn render_template(
+    template_name: &str,
+    context_data: &serde_json::Value,
+    add_generation_prompt: bool,
+) -> Result<String> {
+    let env = ENV.get().expect("Environment is not initialized");
+    let template = match env.get_template(template_name) {
+        Ok(tmpl) => tmpl,
+        Err(e) => {
+            #[cfg(all(feature = "logging", target_os = "wasi"))]
+            error!(target: "stdout", "{}", e);
+
+            return Err(PromptError::TemplateError(e.to_string()));
+        }
+    };
+
+    let context = match add_generation_prompt {
+        true => context!(messages => context_data, add_generation_prompt => true),
+        false => context!(messages => context_data),
+    };
+
+    let prompt = match template.render(context) {
+        Ok(r) => r.trim().to_string(),
+        Err(e) => {
+            #[cfg(all(feature = "logging", target_os = "wasi"))]
+            error!(target: "stdout", "{}", e);
+
+            return Err(PromptError::TemplateError(e.to_string()));
+        }
+    };
+
+    Ok(prompt)
 }

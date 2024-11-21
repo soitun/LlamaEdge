@@ -21,6 +21,7 @@ serde_json.workspace = true
 tera = "1.12"
 minijinja = "2.5.0"
 log = { workspace = true, optional = true }
+once_cell.workspace = true
 
 [target.wasm32-wasip1.dependencies]
 wasi-logger = { workspace = true, optional = true }
