@@ -1,11 +1,13 @@
 use super::BuildChatPrompt;
-use crate::error::{PromptError, Result};
+use crate::{
+    error::{PromptError, Result},
+    initialize_env, render_template, PromptTemplateType,
+};
 use endpoints::chat::{
     ChatCompletionAssistantMessage, ChatCompletionRequestMessage, ChatCompletionSystemMessage,
     ChatCompletionToolMessage, ChatCompletionUserMessage, ChatCompletionUserMessageContent,
     ContentPart, Tool,
 };
-use minijinja::{context, Environment};
 
 /// Generate prompts for the models using ChatML template.
 #[derive(Debug, Default, Clone)]
@@ -591,33 +593,10 @@ impl BuildChatPrompt for InternLM2ToolPrompt {
 pub struct ChatMLPrompt;
 impl BuildChatPrompt for ChatMLPrompt {
     fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
-        let template_str = r#"
-{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system
-You are a helpful, respectful and honest assistant. Always answer as short as possible, while being safe.<|im_end|>
-' }}{% endif %}{{'<|im_start|>' + message['role'] + '
-' + message['content'] + '<|im_end|>' + '
-'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant
-' }}{% endif %}
-        "#;
+        let template_name = initialize_env(PromptTemplateType::ChatML)?;
 
-        // Create an environment and add the template
-        let mut env = Environment::new();
-        if let Err(e) = env.add_template("template", template_str) {
-            #[cfg(all(feature = "logging", target_os = "wasi"))]
-            error!(target: "stdout", "{}", e);
-
-            return Err(PromptError::TemplateError(e.to_string()));
-        }
-
-        // Create context for rendering
-        let context = context! {
-            messages => messages,
-            add_generation_prompt => true,
-        };
-
-        // Render the template
-        let template = match env.get_template("template") {
-            Ok(tmpl) => tmpl,
+        let context_data = match serde_json::to_value(messages) {
+            Ok(data) => data,
             Err(e) => {
                 #[cfg(all(feature = "logging", target_os = "wasi"))]
                 error!(target: "stdout", "{}", e);
@@ -626,19 +605,7 @@ You are a helpful, respectful and honest assistant. Always answer as short as po
             }
         };
 
-        let prompt = match template.render(context) {
-            Ok(r) => r.trim().to_string(),
-            Err(e) => {
-                #[cfg(all(feature = "logging", target_os = "wasi"))]
-                error!(target: "stdout", "{}", e);
-
-                return Err(PromptError::TemplateError(e.to_string()));
-            }
-        };
-
-        // Print the result
-        #[cfg(all(feature = "logging", target_os = "wasi"))]
-        info!(target: "stdout", "raw prompt:\n{}", &prompt);
+        let prompt = render_template(&template_name, &context_data, true)?;
 
         Ok(prompt)
     }

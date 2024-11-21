@@ -1,12 +1,37 @@
 use super::BuildChatPrompt;
-use crate::error::{PromptError, Result};
+use crate::{
+    error::{PromptError, Result},
+    initialize_env, render_template, templates, PromptTemplateType,
+};
 use endpoints::chat::{
     ChatCompletionAssistantMessage, ChatCompletionRequestMessage, ChatCompletionSystemMessage,
     ChatCompletionToolMessage, ChatCompletionUserMessage, ChatCompletionUserMessageContent,
     ContentPart, Tool,
 };
-use minijinja::Environment;
-use serde_json::json;
+use minijinja::{context, Environment};
+
+/// Generate prompts for the `Llama-2-chat` model.
+#[derive(Debug, Default, Clone)]
+pub struct Llama2ChatPromptNew;
+impl BuildChatPrompt for Llama2ChatPromptNew {
+    fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
+        let template_name = initialize_env(PromptTemplateType::Llama2Chat)?;
+
+        let context_data = match serde_json::to_value(messages) {
+            Ok(data) => data,
+            Err(e) => {
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", e);
+
+                return Err(PromptError::TemplateError(e.to_string()));
+            }
+        };
+
+        let prompt = render_template(&template_name, &context_data, true)?;
+
+        Ok(prompt)
+    }
+}
 
 /// Generate prompts for the `Llama-2-chat` model.
 #[derive(Debug, Default, Clone)]
@@ -680,133 +705,76 @@ impl BuildChatPrompt for Llama3ToolPrompt {
 pub struct Llama3Prompt;
 impl BuildChatPrompt for Llama3Prompt {
     fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
-        let template_str = r###"
-    {{- bos_token }}
-{%- if custom_tools is defined %}
-    {%- set tools = custom_tools %}
-{%- endif %}
-{%- if not tools_in_user_message is defined %}
-    {%- set tools_in_user_message = true %}
-{%- endif %}
-{%- if not date_string is defined %}
-    {%- if strftime_now is defined %}
-        {%- set date_string = strftime_now("%d %b %Y") %}
-    {%- else %}
-        {%- set date_string = "26 Jul 2024" %}
-    {%- endif %}
-{%- endif %}
-{%- if not tools is defined %}
-    {%- set tools = none %}
-{%- endif %}
+        let template_name = initialize_env(PromptTemplateType::Llama3Chat)?;
 
-{#- This block extracts the system message, so we can slot it into the right place. #}
-{%- if messages[0]['role'] == 'system' %}
-    {%- set system_message = messages[0]['content']|trim %}
-    {%- set messages = messages[1:] %}
-{%- else %}
-    {%- set system_message = "" %}
-{%- endif %}
-
-{#- System message #}
-{{- "<|start_header_id|>system<|end_header_id|>\n\n" }}
-{%- if tools is not none %}
-    {{- "Environment: ipython\n" }}
-{%- endif %}
-{%- if tools is not none and not tools_in_user_message %}
-    {{- "You have access to the following functions. To call a function, please respond with JSON for a function call." }}
-    {{- 'Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.' }}
-    {{- "Do not use variables.\n\n" }}
-    {%- for t in tools %}
-        {{- t | tojson(indent=4) }}
-        {{- "\n\n" }}
-    {%- endfor %}
-{%- endif %}
-{{- system_message }}
-{{- "<|eot_id|>" }}
-
-{#- Custom tools are passed in a user message with some extra guidance #}
-{%- if tools_in_user_message and not tools is none %}
-    {#- Extract the first user message so we can plug it in here #}
-    {%- if messages | length != 0 %}
-        {%- set first_user_message = messages[0]['content']|trim %}
-        {%- set messages = messages[1:] %}
-    {%- else %}
-        {{- raise_exception("Cannot put tools in the first user message when there's no first user message!") }}
-{%- endif %}
-    {{- '<|start_header_id|>user<|end_header_id|>\n\n' -}}
-    {{- "Given the following functions, please respond with a JSON for a function call " }}
-    {{- "with its proper arguments that best answers the given prompt.\n\n" }}
-    {{- 'Respond in the format {"name": function name, "parameters": dictionary of argument name and its value}.' }}
-    {{- "Do not use variables.\n\n" }}
-    {%- for t in tools %}
-        {{- t | tojson(indent=4) }}
-        {{- "\n\n" }}
-    {%- endfor %}
-    {{- first_user_message + "<|eot_id|>"}}
-{%- endif %}
-
-{%- for message in messages %}
-    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}
-        {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'+ message['content'] | trim + '<|eot_id|>' }}
-    {%- elif 'tool_calls' in message %}
-        {%- if not message.tool_calls|length == 1 %}
-            {{- raise_exception("This model only supports single tool-calls at once!") }}
-        {%- endif %}
-        {%- set tool_call = message.tool_calls[0].function %}
-        {{- '<|start_header_id|>assistant<|end_header_id|>\n\n' -}}
-        {{- '{"name": "' + tool_call.name + '", ' }}
-        {{- '"parameters": ' }}
-        {{- tool_call.arguments | tojson }}
-        {{- "}" }}
-        {{- "<|eot_id|>" }}
-    {%- elif message.role == "tool" or message.role == "ipython" %}
-        {{- "<|start_header_id|>ipython<|end_header_id|>\n\n" }}
-        {%- if message.content is mapping or message.content is iterable %}
-            {{- message.content | tojson }}
-        {%- else %}
-            {{- message.content }}
-        {%- endif %}
-        {{- "<|eot_id|>" }}
-    {%- endif %}
-{%- endfor %}
-{{- '<|start_header_id|>assistant<|end_header_id|>\n\n' }}"###;
-
-        // trim all the whitespace
-        let template_str = template_str
-            .lines()
-            .map(|line| line.trim())
-            .collect::<Vec<&str>>()
-            .join("");
-
-        let env = Environment::new();
-        let template = env.template_from_str(&template_str);
-
-        // serialize the messages to json
-        let messages_json = json!({ "messages": messages });
-
-        match template {
-            Ok(tmpl) => match tmpl.render(&messages_json) {
-                Ok(prompt) => {
-                    let prompt = prompt.trim();
-
-                    #[cfg(all(feature = "logging", target_os = "wasi"))]
-                    info!(target: "stdout", "prompt: {}", &prompt);
-
-                    Ok(prompt.to_string())
-                }
-                Err(e) => {
-                    #[cfg(all(feature = "logging", target_os = "wasi"))]
-                    error!(target: "stdout", "{}", e);
-
-                    Err(PromptError::TemplateError(e.to_string()))
-                }
-            },
+        let context_data = match serde_json::to_value(messages) {
+            Ok(data) => data,
             Err(e) => {
                 #[cfg(all(feature = "logging", target_os = "wasi"))]
                 error!(target: "stdout", "{}", e);
 
-                Err(PromptError::TemplateError(e.to_string()))
+                return Err(PromptError::TemplateError(e.to_string()));
             }
+        };
+
+        let prompt = render_template(&template_name, &context_data, true)?;
+
+        Ok(prompt)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct Llama3ToolPromptNew;
+impl BuildChatPrompt for Llama3ToolPromptNew {
+    fn build(&self, messages: &mut Vec<ChatCompletionRequestMessage>) -> Result<String> {
+        // let template_name = initialize_env(PromptTemplateType::Llama3Tool)?;
+
+        // let context_data = serde_json::to_value(&messages).unwrap();
+
+        // let prompt = render_template(&template_name, &context_data, true)?;
+
+        // Ok(prompt)
+
+        // Create an environment and add the template
+        let mut env = Environment::new();
+        if let Err(e) = env.add_template("llama-3-tool", templates::llama::LLAMA3_TEMPLATE) {
+            #[cfg(all(feature = "logging", target_os = "wasi"))]
+            error!(target: "stdout", "{}", e);
+
+            return Err(PromptError::TemplateError(e.to_string()));
         }
+
+        // Create context for rendering
+        let context = context! {
+            messages => messages,
+            add_generation_prompt => true,
+        };
+
+        // Render the template
+        let template = match env.get_template("llama-3-tool") {
+            Ok(tmpl) => tmpl,
+            Err(e) => {
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", e);
+
+                return Err(PromptError::TemplateError(e.to_string()));
+            }
+        };
+
+        let prompt = match template.render(context) {
+            Ok(r) => r.trim().to_string(),
+            Err(e) => {
+                #[cfg(all(feature = "logging", target_os = "wasi"))]
+                error!(target: "stdout", "{}", e);
+
+                return Err(PromptError::TemplateError(e.to_string()));
+            }
+        };
+
+        // Print the result
+        #[cfg(all(feature = "logging", target_os = "wasi"))]
+        info!(target: "stdout", "raw prompt:\n{}", &prompt);
+
+        Ok(prompt)
     }
 }
